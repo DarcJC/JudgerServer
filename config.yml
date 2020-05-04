@@ -1,0 +1,12 @@
+# 因为Darc太懒了, 所以请对每个配置项添加双引号
+# GetConfig返回值的全部为string哦
+# 如果不加双引号就读取不到了
+version: "1" # 配置文件版本号, 生产环境请勿修改
+
+UNIQUE_ID: "" # 评测鸡唯一ID, 如果留空则每次运行时自动生成一个UUID
+
+# 用于鉴权的密钥
+# 可以使用 Python3.6+ 生成密钥
+# import random, string
+# ''.join(random.choices(string.ascii_letters + string.digits, k=256))
+SECRET: ""
