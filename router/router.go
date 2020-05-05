@@ -80,4 +80,8 @@ func init() {
 			// TODO
 		})
 	}
+	{
+		Router.GET("/test", func(c *gin.Context) {
+		})
+	}
 }

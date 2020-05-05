@@ -1,6 +1,8 @@
 package container
 
-import seccomp "github.com/seccomp/libseccomp-golang"
+import (
+	seccomp "github.com/seccomp/libseccomp-golang"
+)
 
 func init() {
 }
@@ -63,23 +65,42 @@ func GetSyscallNumber(name string) seccomp.ScmpSyscall {
 func NewContainer(rule []seccomp.ScmpSyscall) *Container {
 	if rule == nil {
 		rule = []seccomp.ScmpSyscall{
-			GetSyscallNumber("read"),
-			GetSyscallNumber("fstat"),
-			GetSyscallNumber("mmap"),
-			GetSyscallNumber("mprotect"),
-			GetSyscallNumber("munmap"),
-			GetSyscallNumber("uname"),
-			GetSyscallNumber("arch_prctl"),
-			GetSyscallNumber("brk"),
-			GetSyscallNumber("access"),
-			GetSyscallNumber("exit_group"),
+			GetSyscallNumber("clone"),
 			GetSyscallNumber("close"),
-			GetSyscallNumber("readlink"),
-			GetSyscallNumber("sysinfo"),
-			GetSyscallNumber("write"),
-			GetSyscallNumber("writev"),
+			GetSyscallNumber("epoll_create"),
+			GetSyscallNumber("epoll_create1"),
+			GetSyscallNumber("epoll_ctl"),
+			GetSyscallNumber("epoll_pwait"),
+			GetSyscallNumber("exit"),
+			GetSyscallNumber("exit_group"),
+			GetSyscallNumber("fcntl"),
+			GetSyscallNumber("fdatasync"),
+			GetSyscallNumber("flock"),
+			GetSyscallNumber("fstat"),
+			GetSyscallNumber("fsync"),
+			GetSyscallNumber("ftruncate"),
+			GetSyscallNumber("futex"),
+			GetSyscallNumber("getpid"),
+			GetSyscallNumber("gettid"),
+			GetSyscallNumber("kill"),
 			GetSyscallNumber("lseek"),
-			GetSyscallNumber("clock_gettime"),
+			GetSyscallNumber("madvise"),
+			GetSyscallNumber("mincore"),
+			GetSyscallNumber("mmap"),
+			GetSyscallNumber("munmap"),
+			GetSyscallNumber("nanosleep"),
+			GetSyscallNumber("openat"),
+			GetSyscallNumber("pread64"),
+			GetSyscallNumber("pwrite64"),
+			GetSyscallNumber("read"),
+			GetSyscallNumber("readlinkat"),
+			GetSyscallNumber("rt_sigaction"),
+			GetSyscallNumber("rt_sigprocmask"),
+			GetSyscallNumber("sched_getaffinity"),
+			GetSyscallNumber("sched_yield"),
+			GetSyscallNumber("setitimer"),
+			GetSyscallNumber("tgkill"),
+			GetSyscallNumber("write"),
 		}
 	}
 	return &Container{

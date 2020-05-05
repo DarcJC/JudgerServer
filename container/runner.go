@@ -5,21 +5,41 @@ import (
 	"io/ioutil"
 	"os"
 	"syscall"
+	"unsafe"
+
+	seccomp "github.com/seccomp/libseccomp-golang"
 )
 
 /*
 #include <unistd.h>
 #include <sched.h>
+#include <stdio.h>
+
+unsigned long long test(char *path) {
+	return (unsigned long long)path;
+}
+
+void run_child(char *path, char *args, char *envs) {
+	execve(path, args, envs);
+}
 
 */
 import "C"
 
 // RunnerConfig CreateRunner的配置项
 type RunnerConfig struct {
-	WorkDir    string
-	ChangeRoot bool
-	GID        int
-	UID        int
+	WorkDir     string
+	ChangeRoot  bool
+	GID         int
+	UID         int
+	Arguments   []string
+	Envirment   []string
+	RunablePath string
+	OutputPath  string
+	InputPath   string
+	ErrorPath   string
+	SeccompRule []seccomp.ScmpSyscall
+	SeccompType seccomp.ScmpAction
 }
 
 // MapUser 映射命名空间内外的用户
@@ -69,22 +89,22 @@ func CreateRunner(config *RunnerConfig) {
 		}
 
 		// 创建文件夹
-		if err := os.MkdirAll(config.WorkDir+"/proc", 0666); err != nil {
+		if err := os.MkdirAll(config.WorkDir+"/proc", 0777); err != nil {
 			panic(err)
 		}
-		if err := os.MkdirAll(config.WorkDir+"/dev", 0666); err != nil {
+		if err := os.MkdirAll(config.WorkDir+"/dev", 0777); err != nil {
 			panic(err)
 		}
-		if err := os.MkdirAll(config.WorkDir+"/bin", 0666); err != nil {
+		if err := os.MkdirAll(config.WorkDir+"/bin", 0777); err != nil {
 			panic(err)
 		}
-		if err := os.MkdirAll(config.WorkDir+"/lib", 0666); err != nil {
+		if err := os.MkdirAll(config.WorkDir+"/lib", 0777); err != nil {
 			panic(err)
 		}
-		if err := os.MkdirAll(config.WorkDir+"/usr/lib", 0666); err != nil {
+		if err := os.MkdirAll(config.WorkDir+"/lib64", 0777); err != nil {
 			panic(err)
 		}
-		if err := os.MkdirAll(config.WorkDir+"/var/lib", 0666); err != nil {
+		if err := os.MkdirAll(config.WorkDir+"/usr/lib", 0777); err != nil {
 			panic(err)
 		}
 
@@ -105,6 +125,9 @@ func CreateRunner(config *RunnerConfig) {
 			if err := syscall.Mount("/lib", config.WorkDir+"/lib", "none", syscall.MS_BIND, ""); err != nil {
 				panic(err)
 			}
+			if err := syscall.Mount("/lib64", config.WorkDir+"/lib64", "none", syscall.MS_BIND, ""); err != nil {
+				panic(err)
+			}
 			if err := syscall.Mount("/bin", config.WorkDir+"/bin", "none", syscall.MS_BIND, ""); err != nil {
 				panic(err)
 			}
@@ -115,15 +138,15 @@ func CreateRunner(config *RunnerConfig) {
 		}
 
 		// 重定向IO流
-		inputfd, err := syscall.Open("./input", syscall.O_RDONLY, 0666)
+		inputfd, err := syscall.Open(config.InputPath, syscall.O_RDONLY, 0666)
 		if err != nil {
 			panic(err)
 		}
-		outputfd, err := syscall.Open("./output", syscall.O_RDWR, 0666)
+		outputfd, err := syscall.Open(config.OutputPath, syscall.O_WRONLY, 0666)
 		if err != nil {
 			panic(err)
 		}
-		errorfd, err := syscall.Open("./error", syscall.O_RDWR, 0666)
+		errorfd, err := syscall.Open(config.ErrorPath, syscall.O_WRONLY, 0666)
 		if err != nil {
 			panic(err)
 		}
@@ -137,13 +160,67 @@ func CreateRunner(config *RunnerConfig) {
 			panic(err)
 		}
 
-		// EXECVE子进程
-		if err := syscall.Exec(config.WorkDir+"/test", []string{}, os.Environ()); err != nil {
+		// Seccomp 规则
+		filter, err := seccomp.NewFilter(config.SeccompType)
+		if err != nil {
 			panic(err)
 		}
+		for _, s := range config.SeccompRule {
+			if config.SeccompType == seccomp.ActAllow {
+				filter.AddRule(s, seccomp.ActKill)
+			} else {
+				filter.AddRule(s, seccomp.ActAllow)
+			}
+		}
+		targetPath := C.CString(config.RunablePath)
+		if config.SeccompType == seccomp.ActKill {
+			execveAllow, err := seccomp.MakeCondition(0, seccomp.CompareEqual, uint64((uintptr)(unsafe.Pointer(targetPath))))
+			if err != nil {
+				panic(err)
+			}
+			if err := filter.AddRuleConditional(GetSyscallNumber("execve"), seccomp.ActAllow, []seccomp.ScmpCondition{execveAllow}); err != nil {
+				panic(err)
+			}
+		} else {
+			execveDeny, err := seccomp.MakeCondition(0, seccomp.CompareNotEqual, uint64((uintptr)(unsafe.Pointer(targetPath))))
+			if err != nil {
+				panic(err)
+			}
+			if err := filter.AddRuleConditional(GetSyscallNumber("execve"), seccomp.ActKill, []seccomp.ScmpCondition{execveDeny}); err != nil {
+				panic(err)
+			}
+		}
+		if err := filter.Load(); err != nil {
+			filter.Release()
+			panic(err)
+		}
+		filter.Release()
+
+		// EXECVE子进程
+		var args [](*C.char)
+		for i, item := range config.Arguments {
+			args[i] = C.CString(item)
+		}
+		var envs [](*C.char)
+		for i, item := range config.Envirment {
+			envs[i] = C.CString(item)
+		}
+		if len(args) == 0 && len(envs) == 0 {
+			C.run_child(targetPath, nil, nil)
+		} else if len(args) == 0 {
+			C.run_child(targetPath, nil, envs[0])
+		} else if len(envs) == 0 {
+			C.run_child(targetPath, args[0], nil)
+		} else {
+			C.run_child(targetPath, args[0], envs[0])
+		}
+
+		// if err := syscall.Exec(config.RunablePath, config.Arguments, config.Envirment); err != nil {
+		// 	panic(err)
+		// }
 
 		// 子进程execve失败 退出
-		os.Exit(-1)
+		os.Exit(10)
 	} else if pid > 0 {
 		// 父进程
 		// MapUser(config.UID, config.GID, pid)
@@ -153,7 +230,7 @@ func CreateRunner(config *RunnerConfig) {
 		}
 
 		// 等待子进程
-		var wstatus *syscall.WaitStatus
+		wstatus := new(syscall.WaitStatus)
 		rusage := syscall.Rusage{}
 		wpid, err := syscall.Wait4(pid, wstatus, 0, &rusage)
 
@@ -161,7 +238,7 @@ func CreateRunner(config *RunnerConfig) {
 			panic(err)
 		}
 
-		fmt.Println("子进程退出：", wpid)
+		fmt.Printf("子进程退出：%d 状态：%d 信号: %d %s\n", wpid, wstatus.ExitStatus(), wstatus.Signal(), wstatus.Signal().String())
 
 		return
 	} else {
