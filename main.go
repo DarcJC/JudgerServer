@@ -15,7 +15,7 @@ func main() {
 
 	go container.CreateRunner(&container.RunnerConfig{
 		WorkDir:     "/home/darc/Code/JudgerServer/test_dir/",
-		ChangeRoot:  false,
+		ChangeRoot:  true,
 		GID:         1000,
 		UID:         1000,
 		RunablePath: "/usr/bin/g++",
@@ -23,7 +23,7 @@ func main() {
 			"g++",
 			"test.cpp",
 			"-o",
-			"test",
+			"testqwq",
 		},
 		Envirment:      os.Environ(),
 		OutputPath:     "output",
@@ -33,6 +33,7 @@ func main() {
 		SeccompType:    seccomp.ActAllow,
 		RestrictExecve: false,
 		CPUTimeLimit:   30000,
+		CompilerMode:   true,
 	})
 	router.Router.Run(":8081")
 }

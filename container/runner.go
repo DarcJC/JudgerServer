@@ -3,8 +3,10 @@ package container
 import (
 	"fmt"
 	"io/ioutil"
+	"log"
 	"os"
 	"syscall"
+	"time"
 	"unsafe"
 
 	seccomp "github.com/seccomp/libseccomp-golang"
@@ -37,6 +39,7 @@ type RunnerConfig struct {
 	SeccompRule    []seccomp.ScmpSyscall
 	SeccompType    seccomp.ScmpAction
 	RestrictExecve bool // g++会调用execve...
+	CompilerMode   bool //
 	// 资源限制
 	// 0 < UNLIMITED
 	MemoryLimit        int64  // Byte
@@ -45,6 +48,8 @@ type RunnerConfig struct {
 	OutputSizeLimit    int64  // Byte 最大的输出文件大小
 	CoreDumpLimit      uint64 // Byte 最大的核心转储大小 为0则禁用
 	StackLimit         int64  // Byte 栈大小限制
+	TimeLimit          int64  // ms 实际时间限制
+	TimeAccuracy       uint64 // ms 计时器时间精度 毫秒
 }
 
 // DefaultSeccompBlacklist 默认黑名单
@@ -57,9 +62,9 @@ func init() {
 		GetSyscallNumber("bpf"),
 		GetSyscallNumber("clock_adjtime"),
 		GetSyscallNumber("clock_settime"),
-		GetSyscallNumber("clone"),
+		// GetSyscallNumber("clone"),
 		GetSyscallNumber("chroot"),
-		GetSyscallNumber("chdir"),
+		// GetSyscallNumber("chdir"),
 		GetSyscallNumber("create_module"),
 		GetSyscallNumber("delete_module"),
 		GetSyscallNumber("execveat"),
@@ -134,6 +139,36 @@ func If(b bool, t, f interface{}) interface{} {
 	return f
 }
 
+// GetDefaultAccuracy 获取默认时钟精度
+func GetDefaultAccuracy() uint64 {
+	return 100
+}
+
+// NewWatcher 创建一个监控例程
+func NewWatcher(pid int, config *RunnerConfig, quit <-chan int) {
+	var counter uint64
+	counter = 0
+	accu := config.TimeAccuracy
+	if accu <= 0 {
+		accu = GetDefaultAccuracy()
+	}
+	ticker := time.NewTicker(time.Duration.Milliseconds * accu)
+	for {
+		select {
+		case <-quit:
+			return // 收到退出信号
+		case <-ticker:
+			counter++
+			if (counter * accu) > config.TimeLimit {
+				if err := syscall.Kill(pid, 9); err != nil {
+					panic(err)
+				}
+				return
+			}
+		}
+	}
+}
+
 // CreateRunner 创建运行进程
 func CreateRunner(config *RunnerConfig) {
 	// 初始化通讯管道
@@ -160,63 +195,80 @@ func CreateRunner(config *RunnerConfig) {
 			panic(err)
 		}
 
-		// 隔离命名空间
-		if err := syscall.Unshare(syscall.CLONE_NEWUTS | syscall.CLONE_NEWIPC | syscall.CLONE_NEWPID | syscall.CLONE_NEWNS | syscall.CLONE_NEWUSER | syscall.CLONE_FILES | syscall.CLONE_FS); err != nil {
-			panic(err)
-		}
-
-		// 创建文件夹
-		if err := os.MkdirAll(config.WorkDir+"/proc", 0777); err != nil {
-			panic(err)
-		}
-		if err := os.MkdirAll(config.WorkDir+"/dev", 0777); err != nil {
-			panic(err)
-		}
-		if err := os.MkdirAll(config.WorkDir+"/bin", 0777); err != nil {
-			panic(err)
-		}
-		if err := os.MkdirAll(config.WorkDir+"/lib", 0777); err != nil {
-			panic(err)
-		}
-		if err := os.MkdirAll(config.WorkDir+"/lib64", 0777); err != nil {
-			panic(err)
-		}
-		if err := os.MkdirAll(config.WorkDir+"/usr/lib", 0777); err != nil {
-			panic(err)
-		}
-		if err := os.MkdirAll(config.WorkDir+"/usr/bin", 0777); err != nil {
-			panic(err)
-		}
-
-		// 重新挂载部分文件系统
-		if err := syscall.Mount("proc", "/proc", "proc", syscall.MS_PRIVATE, ""); err != nil {
-			panic(err)
-		}
-		if err := syscall.Mount("udev", "/dev", "devtmpfs", syscall.MS_PRIVATE, ""); err != nil {
-			panic(err)
-		}
-
-		// chroot jail
-		if config.ChangeRoot {
-			// 绑定挂载部分文件夹
-			if err := syscall.Mount("/usr/lib", config.WorkDir+"/usr/lib", "none", syscall.MS_BIND, ""); err != nil {
-				panic(err)
-			}
-			if err := syscall.Mount("/lib", config.WorkDir+"/lib", "none", syscall.MS_BIND, ""); err != nil {
-				panic(err)
-			}
-			if err := syscall.Mount("/lib64", config.WorkDir+"/lib64", "none", syscall.MS_BIND, ""); err != nil {
-				panic(err)
-			}
-			if err := syscall.Mount("/bin", config.WorkDir+"/bin", "none", syscall.MS_BIND, ""); err != nil {
-				panic(err)
-			}
-			if err := syscall.Mount("/usr/bin", config.WorkDir+"/usr/bin", "none", syscall.MS_BIND, ""); err != nil {
+		if !config.CompilerMode {
+			// 隔离命名空间
+			if err := syscall.Unshare(syscall.CLONE_NEWUTS | syscall.CLONE_NEWIPC | syscall.CLONE_NEWPID | syscall.CLONE_NEWNS | syscall.CLONE_NEWUSER | syscall.CLONE_FILES); err != nil {
 				panic(err)
 			}
 
-			if err := syscall.Chroot("./"); err != nil {
+			// 创建文件夹
+			if err := os.MkdirAll(config.WorkDir+"/proc", 0777); err != nil {
 				panic(err)
+			}
+			if err := os.MkdirAll(config.WorkDir+"/dev", 0777); err != nil {
+				panic(err)
+			}
+			if err := os.MkdirAll(config.WorkDir+"/bin", 0777); err != nil {
+				panic(err)
+			}
+			if err := os.MkdirAll(config.WorkDir+"/lib", 0777); err != nil {
+				panic(err)
+			}
+			if err := os.MkdirAll(config.WorkDir+"/lib64", 0777); err != nil {
+				panic(err)
+			}
+			if err := os.MkdirAll(config.WorkDir+"/usr/lib", 0777); err != nil {
+				panic(err)
+			}
+			if err := os.MkdirAll(config.WorkDir+"/usr/bin", 0777); err != nil {
+				panic(err)
+			}
+			if err := os.MkdirAll(config.WorkDir+"/usr/include", 0777); err != nil {
+				panic(err)
+			}
+			if err := os.MkdirAll(config.WorkDir+"/usr/local/include", 0777); err != nil {
+				panic(err)
+			}
+
+			// 重新挂载部分文件系统
+			if err := syscall.Mount("", "/", "", syscall.MS_PRIVATE|syscall.MS_REC, ""); err != nil {
+				panic(err)
+			}
+			if err := syscall.Mount("proc", "/proc", "proc", syscall.MS_NOEXEC|syscall.MS_NOSUID|syscall.MS_NODEV, ""); err != nil {
+				panic(err)
+			}
+			if err := syscall.Mount("udev", "/dev", "devtmpfs", syscall.MS_NOEXEC|syscall.MS_NOSUID|syscall.MS_NODEV, ""); err != nil {
+				panic(err)
+			}
+
+			// chroot jail
+			if config.ChangeRoot {
+				// 绑定挂载部分文件夹
+				if err := syscall.Mount("/usr/lib", config.WorkDir+"/usr/lib", "none", syscall.MS_BIND, ""); err != nil {
+					panic(err)
+				}
+				if err := syscall.Mount("/lib", config.WorkDir+"/lib", "none", syscall.MS_BIND, ""); err != nil {
+					panic(err)
+				}
+				if err := syscall.Mount("/lib64", config.WorkDir+"/lib64", "none", syscall.MS_BIND, ""); err != nil {
+					panic(err)
+				}
+				if err := syscall.Mount("/bin", config.WorkDir+"/bin", "none", syscall.MS_BIND, ""); err != nil {
+					panic(err)
+				}
+				if err := syscall.Mount("/usr/bin", config.WorkDir+"/usr/bin", "none", syscall.MS_BIND, ""); err != nil {
+					panic(err)
+				}
+				if err := syscall.Mount("/usr/include", config.WorkDir+"/usr/include", "none", syscall.MS_BIND, ""); err != nil {
+					panic(err)
+				}
+				if err := syscall.Mount("/usr/local/include", config.WorkDir+"/usr/local/include", "none", syscall.MS_BIND, ""); err != nil {
+					panic(err)
+				}
+
+				if err := syscall.Chroot("./"); err != nil {
+					panic(err)
+				}
 			}
 		}
 
@@ -343,20 +395,26 @@ func CreateRunner(config *RunnerConfig) {
 			panic(err)
 		}
 
+		// 监控进程
+		quit := make(chan int)
+		if config.TimeLimit > 0 {
+			go NewWatcher(pid, config, quit)
+		}
+
 		// 等待子进程
 		wstatus := new(syscall.WaitStatus)
 		rusage := syscall.Rusage{}
 		wpid, err := syscall.Wait4(pid, wstatus, 0, &rusage)
-
 		if err != nil {
 			panic(err)
 		}
+		quit <- 1 // 通知监控进程退出
 
-		fmt.Printf("子进程退出：%d 状态：%d 信号: %d %s\n", wpid, wstatus.ExitStatus(), wstatus.Signal(), wstatus.Signal().String())
+		log.Printf("子进程退出：%d 状态：%d 信号: %d %s\n", wpid, wstatus.ExitStatus(), wstatus.Signal(), wstatus.Signal().String())
 
 		return
 	} else {
-		// 运行错误
+		// Fork错误
 		panic("fork failed")
 	}
 }

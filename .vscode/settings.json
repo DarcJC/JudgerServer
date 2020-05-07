@@ -2,6 +2,7 @@
     "files.associations": {
         "sched.h": "c",
         "unistd.h": "c",
-        "c_utils.h": "c"
+        "c_utils.h": "c",
+        "iostream": "cpp"
     }
 }
