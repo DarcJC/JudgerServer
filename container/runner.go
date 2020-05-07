@@ -26,30 +26,43 @@ import "C"
 
 // RunnerConfig CreateRunner的配置项
 type RunnerConfig struct {
-	WorkDir        string
+	WorkDir        string // 必填 工作目录
 	ChangeRoot     bool
-	GID            int
-	UID            int
-	Arguments      []string
-	Envirment      []string
-	RunablePath    string
-	OutputPath     string
-	InputPath      string
-	ErrorPath      string
-	SeccompRule    []seccomp.ScmpSyscall
-	SeccompType    seccomp.ScmpAction
-	RestrictExecve bool // g++会调用execve...
-	CompilerMode   bool //
+	GID            int                   // 暂时无效
+	UID            int                   // 暂时无效
+	Arguments      []string              // 运行参数
+	Envirment      []string              // 运行环境变量
+	RunablePath    string                // 可执行文件路径, 基于WorkDir填写
+	OutputPath     string                // 必填 输出文件路径
+	InputPath      string                // 必填 输入文件路径
+	ErrorPath      string                // 必填 错误输出文件路径
+	SeccompRule    []seccomp.ScmpSyscall // 必填
+	SeccompType    seccomp.ScmpAction    // seccomp.ActKill 或 seccomp.ActAllow 其它暂不支持
+	RestrictExecve bool                  // 是否限制execve路径 g++会调用execve...
+	CompilerMode   bool                  // 是否为编译器模式(不会进入新的命名空间)
 	// 资源限制
-	// 0 < UNLIMITED
-	MemoryLimit        int64  // Byte
-	CPUTimeLimit       int64  // ms
+	// <= 0 则 UNLIMITED
+	MemoryLimit        int64  // Byte 内存限制
+	CPUTimeLimit       int64  // ms CPU时间限制
 	ProcessNumberLimit int64  // 个 最大创建进程数限制
 	OutputSizeLimit    int64  // Byte 最大的输出文件大小
 	CoreDumpLimit      uint64 // Byte 最大的核心转储大小 为0则禁用
 	StackLimit         int64  // Byte 栈大小限制
 	TimeLimit          int64  // ms 实际时间限制
 	TimeAccuracy       uint64 // ms 计时器时间精度 毫秒
+}
+
+// RunResult 运行结果
+type RunResult struct {
+	WorkDir    string
+	CPUTime    uint64 // ms
+	RealTime   uint64 // ms
+	Memory     uint64 // byte
+	OutputPath string
+	ErrorPath  string
+	ExitCode   int
+	Signal     int
+	Result     string // 退出原因 不存在则为signal -1
 }
 
 // DefaultSeccompBlacklist 默认黑名单
@@ -152,14 +165,14 @@ func NewWatcher(pid int, config *RunnerConfig, quit <-chan int) {
 	if accu <= 0 {
 		accu = GetDefaultAccuracy()
 	}
-	ticker := time.NewTicker(time.Duration.Milliseconds * accu)
+	ticker := time.NewTicker(time.Millisecond * time.Duration(accu))
 	for {
 		select {
 		case <-quit:
 			return // 收到退出信号
-		case <-ticker:
+		case <-ticker.C:
 			counter++
-			if (counter * accu) > config.TimeLimit {
+			if int64(counter*accu) > config.TimeLimit {
 				if err := syscall.Kill(pid, 9); err != nil {
 					panic(err)
 				}
@@ -170,7 +183,7 @@ func NewWatcher(pid int, config *RunnerConfig, quit <-chan int) {
 }
 
 // CreateRunner 创建运行进程
-func CreateRunner(config *RunnerConfig) {
+func CreateRunner(config *RunnerConfig, res chan RunResult) {
 	// 初始化通讯管道
 	pipefd := make([]int, 2)
 	syscall.Pipe(pipefd)
@@ -231,13 +244,10 @@ func CreateRunner(config *RunnerConfig) {
 			}
 
 			// 重新挂载部分文件系统
-			if err := syscall.Mount("", "/", "", syscall.MS_PRIVATE|syscall.MS_REC, ""); err != nil {
+			if err := syscall.Mount("proc", "/proc", "proc", syscall.MS_PRIVATE, ""); err != nil {
 				panic(err)
 			}
-			if err := syscall.Mount("proc", "/proc", "proc", syscall.MS_NOEXEC|syscall.MS_NOSUID|syscall.MS_NODEV, ""); err != nil {
-				panic(err)
-			}
-			if err := syscall.Mount("udev", "/dev", "devtmpfs", syscall.MS_NOEXEC|syscall.MS_NOSUID|syscall.MS_NODEV, ""); err != nil {
+			if err := syscall.Mount("udev", "/dev", "devtmpfs", syscall.MS_PRIVATE, ""); err != nil {
 				panic(err)
 			}
 
@@ -386,7 +396,7 @@ func CreateRunner(config *RunnerConfig) {
 		C.run_child(targetPath, (*C.char)(unsafe.Pointer(&args[0])), (*C.char)(unsafe.Pointer(&envs[0])))
 
 		// 子进程execve失败 退出
-		os.Exit(10)
+		os.Exit(2133)
 	} else if pid > 0 {
 		// 父进程
 		// MapUser(config.UID, config.GID, pid)
@@ -394,6 +404,9 @@ func CreateRunner(config *RunnerConfig) {
 		if err := syscall.Close(pipefd[1]); err != nil {
 			panic(err)
 		}
+
+		// 开始时间
+		start := time.Now()
 
 		// 监控进程
 		quit := make(chan int)
@@ -404,13 +417,24 @@ func CreateRunner(config *RunnerConfig) {
 		// 等待子进程
 		wstatus := new(syscall.WaitStatus)
 		rusage := syscall.Rusage{}
-		wpid, err := syscall.Wait4(pid, wstatus, 0, &rusage)
-		if err != nil {
-			panic(err)
-		}
-		quit <- 1 // 通知监控进程退出
+		wpid, _ := syscall.Wait4(pid, wstatus, 0, &rusage)
+		close(quit) // 通知监控进程退出
 
-		log.Printf("子进程退出：%d 状态：%d 信号: %d %s\n", wpid, wstatus.ExitStatus(), wstatus.Signal(), wstatus.Signal().String())
+		if res == nil {
+			log.Printf("子进程退出：%d 状态：%d 信号: %d %s\n", wpid, wstatus.ExitStatus(), wstatus.Signal(), wstatus.Signal().String())
+		} else {
+			result := RunResult{}
+			result.WorkDir = config.WorkDir
+			result.OutputPath = config.OutputPath
+			result.ErrorPath = config.ErrorPath
+			result.Memory = uint64(rusage.Maxrss * 1000)
+			result.CPUTime = uint64((rusage.Utime.Sec * 1000) + (rusage.Utime.Usec / 1000) + (rusage.Stime.Sec * 1000) + (rusage.Stime.Usec / 1000))
+			result.RealTime = uint64(time.Since(start).Milliseconds())
+			result.Signal = int(wstatus.Signal())
+			result.ExitCode = wstatus.ExitStatus()
+			result.Result = wstatus.Signal().String()
+			res <- result
+		}
 
 		return
 	} else {
