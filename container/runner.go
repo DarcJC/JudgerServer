@@ -18,7 +18,7 @@ import (
 #include <stdio.h>
 
 void run_child(char *path, char *args, char *envs) {
-	execve(path, args, envs);
+    execve(path, args, envs);
 }
 
 */
@@ -350,6 +350,9 @@ func CreateRunner(config *RunnerConfig, res chan RunResult) {
 		filter, err := seccomp.NewFilter(config.SeccompType)
 		if err != nil {
 			panic(err)
+		}
+		if config.SeccompType == seccomp.ActAllow && config.SeccompRule == nil {
+			config.SeccompRule = DefaultSeccompBlacklist
 		}
 		for _, s := range config.SeccompRule {
 			if config.SeccompType == seccomp.ActAllow {

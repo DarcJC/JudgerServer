@@ -1,7 +1,12 @@
 package container
 
 /*
-#include "c_utils.h"
+#include "unistd.h"
+
+int do_fork() {
+    pid_t pid = fork();
+    return pid;
+}
 */
 import "C"
 
