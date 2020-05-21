@@ -10,3 +10,7 @@ UNIQUE_ID: "" # 评测鸡唯一ID, 如果留空则每次运行时自动生成一
 # import random, string
 # ''.join(random.choices(string.ascii_letters + string.digits, k=256))
 SECRET: ""
+
+# RABBITMQ
+RMQ_URL: "amqp://guest:guest@locallost:5672/"
+RMQ_QNAME: "anwser_submit"
