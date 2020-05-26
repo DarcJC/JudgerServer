@@ -399,7 +399,7 @@ func CreateRunner(config *RunnerConfig, res chan RunResult) {
 		C.run_child(targetPath, (*C.char)(unsafe.Pointer(&args[0])), (*C.char)(unsafe.Pointer(&envs[0])))
 
 		// 子进程execve失败 退出
-		os.Exit(2133)
+		os.Exit(20)
 	} else if pid > 0 {
 		// 父进程
 		// MapUser(config.UID, config.GID, pid)
